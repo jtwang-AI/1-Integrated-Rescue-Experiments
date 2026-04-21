@@ -1,5 +1,5 @@
 
-TCSS 集成救援实验 (TCSS Integrated Rescue Experiments)
+集成救援实验 (Integrated Rescue Experiments)
 目录包含用于以下模块的工程代码： 
 
 GMRACCR.py：具有冲突或协作角色的角色分配模块。 
