@@ -35,10 +35,6 @@ run_integrated_experiments.py：可复现实验的入口程序。
 
 输出结果将写入以下位置： 
 
-results/summary.json
-
-results/metrics.csv
-
 轨迹图位于 results/*.png 
 
 运行独立求解器演示：
@@ -48,10 +44,6 @@ results/metrics.csv
 安装 pulp，GMRACCR.py 将针对此处使用的较小案例回退到精确穷举求解器。 
 
 主要结果文件
-
-results/summary.json：嵌套的机器可读实验结果。 
-
-results/metrics.csv：用于电子表格或附录的扁平化结果表。 
 
 results/static_gmraccr.png：优化的名义部署图。 
 

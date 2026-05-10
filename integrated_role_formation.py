@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import math
 import random
-import csv
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -594,8 +593,6 @@ def simulate_assignment(assignment: Dict[int, List[int]], total_steps: int = 360
         fig.tight_layout()
         fig.savefig(output_prefix.with_suffix(".png"), dpi=300, bbox_inches="tight")
         plt.close()
-        with output_prefix.with_suffix(".json").open("w", encoding="utf-8") as f:
-            json.dump({str(agent_idx): trajectory for agent_idx, trajectory in history.items()}, f)
 
     base, compat = assignment_objective(current_assignment, list(range(len(AGENTS))), list(range(len(ROLES))), qualification_matrix, rcc_matrix)
     return SimulationMetrics(
@@ -877,14 +874,14 @@ def run_situation_aware_end_to_end(output_dir: Path) -> List[Dict[str, object]]:
     fig, axes = plt.subplots(1, 3, figsize=(10.2, 3.6))
     fig.patch.set_facecolor("white")
     plot_specs = [
-        (output_dir / "situation_baseline_ahp.json", "(a) Baseline AHP", True),
-        (output_dir / "situation_shift_stale.json", "(b) Shift, stale", False),
-        (output_dir / "situation_shift_reassign.json", "(c) Shift, reassigned", False),
+        (output_dir / "situation_baseline_ahp.png", "(a) Baseline AHP"),
+        (output_dir / "situation_shift_stale.png", "(b) Shift, stale"),
+        (output_dir / "situation_shift_reassign.png", "(c) Shift, reassigned"),
     ]
-    for ax, (path, title, show_ylabel) in zip(axes, plot_specs):
-        plot_rescue_trajectory(ax, load_history(path), title, show_ylabel=show_ylabel)
-        if ax.get_legend():
-            ax.legend_.remove()
+    for ax, (path, title) in zip(axes, plot_specs):
+        ax.imshow(mpimg.imread(path))
+        ax.set_title(title, pad=3)
+        ax.axis("off")
     fig.tight_layout(w_pad=0.4)
     fig.savefig(output_dir / "situation_aware_panel.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
@@ -1205,26 +1202,21 @@ def run_assignment_scaling(output_dir: Path) -> List[Dict[str, float]]:
     return rows
 
 
-def load_history(path: Path) -> Dict[int, List[Tuple[float, float]]]:
-    with path.open("r", encoding="utf-8") as f:
-        raw = json.load(f)
-    return {int(agent_idx): [tuple(point) for point in points] for agent_idx, points in raw.items()}
-
-
 def make_scarce_comparison_panel(output_dir: Path, scarce_results: Dict[str, SimulationMetrics]) -> None:
     set_ocean_plot_style()
     fig = plt.figure(figsize=(10.2, 6.1))
     gs = fig.add_gridspec(2, 3, height_ratios=[2.05, 1.0], hspace=0.34, wspace=0.18)
-    histories = [
-        load_history(output_dir / "scarce_auction.json"),
-        load_history(output_dir / "scarce_gmra.json"),
-        load_history(output_dir / "scarce_gmraccr.json"),
+    image_paths = [
+        output_dir / "scarce_auction.png",
+        output_dir / "scarce_gmra.png",
+        output_dir / "scarce_gmraccr.png",
     ]
     labels = ["(a) Sequential auction", "(b) GMRA", "(c) GMRACCR"]
-    for idx, (history, label) in enumerate(zip(histories, labels)):
+    for idx, (path, label) in enumerate(zip(image_paths, labels)):
         ax = fig.add_subplot(gs[0, idx])
-        plot_rescue_trajectory(ax, history, label, show_ylabel=(idx == 0))
-        ax.legend_.remove() if ax.get_legend() else None
+        ax.imshow(mpimg.imread(path))
+        ax.set_title(label, pad=3)
+        ax.axis("off")
 
     methods = ["Auction", "GMRA", "GMRACCR"]
     source_names = ["Sequential auction multi-role", "GMRA-multi", "GMRACCR-multi"]
@@ -1452,40 +1444,6 @@ def run_all_experiments(output_dir: Path) -> Dict[str, object]:
             "Failure-reassignment": {"base": reassigned_base, "compat": reassigned_compat},
         },
     }
-
-    with (output_dir / "summary.json").open("w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2)
-
-    table_rows = []
-    for group_name in ("static_results", "scarce_results", "failure_results", "disturbance_results", "shape_results"):
-        for method_name, metrics in summary[group_name].items():
-            table_rows.append({
-                "group": group_name,
-                "method": method_name,
-                **metrics,
-            })
-    for row in beta_sweep:
-        table_rows.append({"group": "beta_sweep", "method": f"beta={row['beta']:.1f}", **row})
-    for row in disturbance_sweep:
-        table_rows.append({"group": "disturbance_sweep", "method": f"{row['mode']}-scale={row['current_scale']:.1f}", **row})
-    for row in situation_aware:
-        table_row = {key: value for key, value in row.items() if key != "assignment"}
-        table_rows.append({"group": "situation_aware", **table_row})
-    for method_name, row in rcc_perturbation.items():
-        table_rows.append({"group": "rcc_perturbation", "method": method_name, **row})
-    for method_name, row in stochastic_scarce.items():
-        table_rows.append({"group": "stochastic_scarce", "method": method_name, **row})
-    for row in assignment_scaling:
-        table_rows.append({"group": "assignment_scaling", "method": f"{int(row['agents'])}/{int(row['roles'])}", **row})
-    with (output_dir / "metrics.csv").open("w", encoding="utf-8", newline="") as f:
-        fieldnames = []
-        for row in table_rows:
-            for key in row.keys():
-                if key not in fieldnames:
-                    fieldnames.append(key)
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(table_rows)
 
     return summary
 
