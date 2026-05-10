@@ -4,11 +4,14 @@ import json
 import math
 import random
 import csv
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
+from matplotlib.patches import Circle, Polygon
 import numpy as np
 
 from GMRACCR import GMRACCR
@@ -31,6 +34,15 @@ class RoleProfile:
     radius: float
     phase: float
     weights: Tuple[float, float, float, float, float, float]
+
+
+@dataclass(frozen=True)
+class SituationIndicators:
+    bearing_rate: float
+    acceleration: float
+    rescue_speed: float
+    distance: float
+    bearing: float
 
 
 @dataclass(frozen=True)
@@ -73,6 +85,35 @@ ROLES: List[RoleProfile] = [
 
 FEATURE_KEYS = ("speed", "maneuver", "communication", "payload", "endurance", "stability")
 
+AHP_WEIGHTS = (0.03, 0.06, 0.15, 0.46, 0.30)
+
+SITUATION_ROLE_TEMPLATES: List[Tuple[float, float, float, float, float]] = [
+    (0.16, 0.08, 0.20, 0.26, 0.30),  # approach guidance
+    (0.22, 0.24, 0.26, 0.14, 0.14),  # high-mobility interception
+    (0.08, 0.05, 0.16, 0.34, 0.37),  # communication relay
+    (0.10, 0.12, 0.18, 0.38, 0.22),  # close-range support
+    (0.06, 0.08, 0.12, 0.36, 0.38),  # safety backup
+]
+
+SITUATION_SNAPSHOTS: Dict[str, List[SituationIndicators]] = {
+    "baseline": [
+        SituationIndicators(4.0, 0.8, 0.8, 1800.0, 80.0),
+        SituationIndicators(13.0, 4.0, 2.0, 4000.0, 100.0),
+        SituationIndicators(6.0, 2.0, 0.5, 2400.0, 70.0),
+        SituationIndicators(10.0, 2.0, 3.0, 3800.0, 80.0),
+        SituationIndicators(2.0, 1.0, 1.0, 1200.0, 100.0),
+        SituationIndicators(5.0, 0.2, 1.5, 3000.0, 70.0),
+    ],
+    "bearing_shift": [
+        SituationIndicators(5.0, 1.0, 0.9, 2600.0, 112.0),
+        SituationIndicators(9.0, 3.2, 1.8, 3300.0, 104.0),
+        SituationIndicators(11.0, 2.7, 1.1, 1300.0, 74.0),
+        SituationIndicators(7.0, 1.8, 2.7, 4100.0, 96.0),
+        SituationIndicators(3.0, 1.2, 1.2, 1900.0, 84.0),
+        SituationIndicators(8.0, 1.5, 2.1, 1500.0, 76.0),
+    ],
+}
+
 RCC = [
     [0.00, 0.45, -0.20, 0.05, 0.00],
     [0.45, 0.00, -0.30, 0.05, -0.10],
@@ -80,6 +121,74 @@ RCC = [
     [0.05, 0.05, -0.10, 0.00, 0.25],
     [0.00, -0.10, 0.35, 0.25, 0.00],
 ]
+
+PLOT_COLORS = ["#2f7fbd", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b"]
+
+
+def set_ocean_plot_style() -> None:
+    plt.rcParams.update({
+        "font.size": 9,
+        "axes.labelsize": 9,
+        "axes.titlesize": 10,
+        "legend.fontsize": 8,
+        "xtick.labelsize": 8,
+        "ytick.labelsize": 8,
+        "axes.linewidth": 0.8,
+        "grid.linewidth": 0.45,
+        "grid.alpha": 0.25,
+        "figure.facecolor": "white",
+        "savefig.facecolor": "white",
+    })
+
+
+def draw_usv_marker(ax, x: float, y: float, angle: float, color: str, scale: float = 0.22) -> None:
+    hull = np.array([[1.25, 0.0], [-0.7, 0.45], [-1.0, 0.0], [-0.7, -0.45]]) * scale
+    rot = np.array([[math.cos(angle), -math.sin(angle)], [math.sin(angle), math.cos(angle)]])
+    pts = hull @ rot.T + np.array([x, y])
+    ax.add_patch(Polygon(pts, closed=True, facecolor=color, edgecolor="white", linewidth=0.5, zorder=5))
+
+
+def plot_rescue_trajectory(ax, history: Dict[int, List[Tuple[float, float]]], title: str,
+                           orbit_mode: str = "circle", show_ylabel: bool = True) -> None:
+    ax.set_facecolor("#f7fbff")
+    theta = np.linspace(0.0, 2.0 * np.pi, 360)
+    for role in ROLES:
+        if orbit_mode == "ellipse":
+            x_orbit = 1.20 * role.radius * np.cos(theta)
+            y_orbit = 0.82 * role.radius * np.sin(theta)
+        else:
+            x_orbit = role.radius * np.cos(theta)
+            y_orbit = role.radius * np.sin(theta)
+        ax.plot(x_orbit, y_orbit, "--", linewidth=0.8, color="#b8b8b8", zorder=1)
+    ax.add_patch(Circle((0, 0), 0.18, facecolor="#e41a1c", edgecolor="white", linewidth=0.6, zorder=6))
+    ax.text(0.22, 0.18, "Target", fontsize=7, color="#b2182b")
+    for agent_idx, trajectory in history.items():
+        if not trajectory:
+            continue
+        xs = [p[0] for p in trajectory]
+        ys = [p[1] for p in trajectory]
+        color = PLOT_COLORS[agent_idx % len(PLOT_COLORS)]
+        ax.plot(xs, ys, linewidth=1.8, color=color, label=AGENTS[agent_idx].name, zorder=3)
+        mid = len(trajectory) // 2
+        ax.scatter([xs[0], xs[mid], xs[-1]], [ys[0], ys[mid], ys[-1]],
+                   marker="o", s=[14, 20, 28], color=color, edgecolor="white", linewidth=0.35, zorder=4)
+        if len(trajectory) > 2:
+            angle = math.atan2(ys[-1] - ys[-2], xs[-1] - xs[-2])
+        else:
+            angle = 0.0
+        draw_usv_marker(ax, xs[-1], ys[-1], angle, color)
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlim(-5.7, 5.9)
+    ax.set_ylim(-5.4, 5.8)
+    ax.set_xlabel("x (m)")
+    if show_ylabel:
+        ax.set_ylabel("y (m)")
+    else:
+        ax.set_ylabel("")
+    ax.set_title(title, pad=4)
+    ax.grid(True)
+    for spine in ax.spines.values():
+        spine.set_linewidth(0.8)
 
 
 def wrap_angle(angle: float) -> float:
@@ -108,6 +217,45 @@ def build_qualification_matrix(agent_indices: Sequence[int], role_indices: Seque
         matrix.append(row)
     max_value = max(max(row) for row in matrix)
     return [[value / max_value for value in row] for row in matrix]
+
+
+def build_situation_qualification_matrix(agent_indices: Sequence[int], role_indices: Sequence[int],
+                                         indicators: Sequence[SituationIndicators],
+                                         reference_distance: float = 4500.0,
+                                         preferred_bearing: float = 90.0) -> List[List[float]]:
+    raw_scores: List[List[float]] = []
+    for item in indicators:
+        distance_score = reference_distance / item.distance if item.distance <= reference_distance else 0.1
+        bearing_score = 1.0 / (1.0 + abs(abs(item.bearing) - preferred_bearing) / 20.0)
+        raw_scores.append([
+            abs(item.bearing_rate),
+            item.acceleration,
+            item.rescue_speed,
+            distance_score,
+            bearing_score,
+        ])
+
+    columns = list(zip(*raw_scores))
+    normalized_columns: List[List[float]] = []
+    for column in columns:
+        c_min = min(column)
+        c_max = max(column)
+        if abs(c_max - c_min) < 1e-9:
+            normalized_columns.append([1.0 for _ in column])
+        else:
+            normalized_columns.append([(value - c_min) / (c_max - c_min) for value in column])
+    normalized_scores = [list(row) for row in zip(*normalized_columns)]
+
+    matrix: List[List[float]] = []
+    for agent_idx in agent_indices:
+        weighted = [score * weight for score, weight in zip(normalized_scores[agent_idx], AHP_WEIGHTS)]
+        row = []
+        for role_idx in role_indices:
+            template = SITUATION_ROLE_TEMPLATES[role_idx]
+            row.append(sum(value * role_weight for value, role_weight in zip(weighted, template)))
+        matrix.append(row)
+    max_value = max(max(row) for row in matrix)
+    return [[value / max_value if max_value > 0 else 0.0 for value in row] for row in matrix]
 
 
 def build_assignment_from_matrix(assignment_matrix: Sequence[Sequence[int]], agent_indices: Sequence[int],
@@ -154,11 +302,44 @@ def random_feasible_assignment(agent_indices: Sequence[int], role_indices: Seque
     return assignment
 
 
+def sequential_auction_assignment(agent_indices: Sequence[int], role_indices: Sequence[int],
+                                  capacities: Sequence[int],
+                                  qualification_matrix: Optional[Sequence[Sequence[float]]] = None,
+                                  rcc_matrix: Optional[Sequence[Sequence[float]]] = None) -> Dict[int, List[int]]:
+    q = [list(row) for row in qualification_matrix] if qualification_matrix is not None else build_qualification_matrix(agent_indices, role_indices)
+    rcc = [list(row) for row in rcc_matrix] if rcc_matrix is not None else RCC
+    remaining_capacity = {agent_idx: capacities[local_idx] for local_idx, agent_idx in enumerate(agent_indices)}
+    assignment: Dict[int, List[int]] = {}
+    for local_role_idx, role_idx in enumerate(role_indices):
+        best_agent: Optional[int] = None
+        best_bid = float("-inf")
+        for local_agent_idx, agent_idx in enumerate(agent_indices):
+            if remaining_capacity[agent_idx] <= 0:
+                continue
+            held_roles = assignment.get(agent_idx, [])
+            marginal_compat = 0.0
+            for held_role_idx in held_roles:
+                local_held = role_indices.index(held_role_idx)
+                marginal_compat += rcc[local_role_idx][local_held] + rcc[local_held][local_role_idx]
+            bid = q[local_agent_idx][local_role_idx] + marginal_compat
+            if bid > best_bid:
+                best_bid = bid
+                best_agent = agent_idx
+        if best_agent is None:
+            raise RuntimeError("No feasible sequential-auction assignment found")
+        assignment.setdefault(best_agent, []).append(role_idx)
+        remaining_capacity[best_agent] -= 1
+    return assignment
+
+
 def optimized_assignment(agent_indices: Sequence[int], role_indices: Sequence[int], capacities: Sequence[int],
-                         use_compatibility: bool = True, compatibility_scale: float = 1.0) -> Tuple[Dict[int, List[int]], float, float]:
-    q = build_qualification_matrix(agent_indices, role_indices)
+                         use_compatibility: bool = True, compatibility_scale: float = 1.0,
+                         qualification_matrix: Optional[Sequence[Sequence[float]]] = None,
+                         rcc_matrix: Optional[Sequence[Sequence[float]]] = None) -> Tuple[Dict[int, List[int]], float, float]:
+    q = [list(row) for row in qualification_matrix] if qualification_matrix is not None else build_qualification_matrix(agent_indices, role_indices)
     if use_compatibility:
-        rcc = [[compatibility_scale * value for value in row] for row in RCC]
+        source_rcc = rcc_matrix if rcc_matrix is not None else RCC
+        rcc = [[compatibility_scale * value for value in row] for row in source_rcc]
     else:
         rcc = [[0.0 for _ in role_indices] for _ in role_indices]
     solver = GMRACCR(
@@ -174,8 +355,11 @@ def optimized_assignment(agent_indices: Sequence[int], role_indices: Sequence[in
     return assignment, result.base_score, result.compatibility_score
 
 
-def assignment_objective(assignment: Dict[int, List[int]], agent_indices: Sequence[int], role_indices: Sequence[int]) -> Tuple[float, float]:
-    q = build_qualification_matrix(agent_indices, role_indices)
+def assignment_objective(assignment: Dict[int, List[int]], agent_indices: Sequence[int], role_indices: Sequence[int],
+                         qualification_matrix: Optional[Sequence[Sequence[float]]] = None,
+                         rcc_matrix: Optional[Sequence[Sequence[float]]] = None) -> Tuple[float, float]:
+    q = [list(row) for row in qualification_matrix] if qualification_matrix is not None else build_qualification_matrix(agent_indices, role_indices)
+    rcc = [list(row) for row in rcc_matrix] if rcc_matrix is not None else RCC
     local_agent_lookup = {agent_idx: i for i, agent_idx in enumerate(agent_indices)}
     local_role_lookup = {role_idx: j for j, role_idx in enumerate(role_indices)}
     base = 0.0
@@ -186,7 +370,7 @@ def assignment_objective(assignment: Dict[int, List[int]], agent_indices: Sequen
             base += q[local_i][local_role_lookup[role_idx]]
         for role_i in roles:
             for role_j in roles:
-                compat += RCC[local_role_lookup[role_i]][local_role_lookup[role_j]]
+                compat += rcc[local_role_lookup[role_i]][local_role_lookup[role_j]]
     return base, compat
 
 
@@ -218,7 +402,11 @@ def simulate_assignment(assignment: Dict[int, List[int]], total_steps: int = 360
                         output_prefix: Optional[Path] = None, enable_current: bool = True,
                         enable_collision_avoidance: bool = True, current_scale: float = 1.0,
                         safe_distance: float = 0.85, avoidance_gain: float = 0.22,
-                        compact_start: bool = False, orbit_mode: str = "circle") -> SimulationMetrics:
+                        compact_start: bool = False, orbit_mode: str = "circle",
+                        initial_phase_noise: float = 0.0, initial_radius_noise: float = 0.0,
+                        seed: Optional[int] = None,
+                        qualification_matrix: Optional[Sequence[Sequence[float]]] = None,
+                        rcc_matrix: Optional[Sequence[Sequence[float]]] = None) -> SimulationMetrics:
     standby_radius = 5.6
     base_omega = 0.18
     k_radial = 0.85
@@ -228,6 +416,8 @@ def simulate_assignment(assignment: Dict[int, List[int]], total_steps: int = 360
     states: Dict[int, Dict[str, float]] = {}
     current_assignment = {agent_idx: list(roles) for agent_idx, roles in assignment.items()}
     all_agent_ids = sorted(set(current_assignment) | ({failed_agent} if failed_agent is not None else set()) | ({idx for idx in range(len(AGENTS))}))
+
+    rng = random.Random(seed)
 
     for agent_idx in range(len(AGENTS)):
         roles = current_assignment.get(agent_idx, [])
@@ -243,6 +433,10 @@ def simulate_assignment(assignment: Dict[int, List[int]], total_steps: int = 360
         else:
             orbit_scale = standby_radius
             phase = 5.4 + 0.3 * agent_idx
+        if initial_phase_noise > 0.0:
+            phase += rng.uniform(-initial_phase_noise, initial_phase_noise)
+        if initial_radius_noise > 0.0:
+            orbit_scale *= 1.0 + rng.uniform(-initial_radius_noise, initial_radius_noise)
         states[agent_idx] = {
             "x": orbit_scale * math.cos(phase),
             "y": orbit_scale * math.sin(phase),
@@ -393,30 +587,17 @@ def simulate_assignment(assignment: Dict[int, List[int]], total_steps: int = 360
 
     if output_prefix is not None:
         output_prefix.parent.mkdir(parents=True, exist_ok=True)
-        plt.figure(figsize=(6, 6))
-        theta = np.linspace(0.0, 2.0 * np.pi, 300)
-        for role in ROLES:
-            if orbit_mode == "ellipse":
-                x_orbit = 1.20 * role.radius * np.cos(theta)
-                y_orbit = 0.82 * role.radius * np.sin(theta)
-            else:
-                x_orbit = role.radius * np.cos(theta)
-                y_orbit = role.radius * np.sin(theta)
-            plt.plot(x_orbit, y_orbit, "--", linewidth=0.7, color="0.7")
-        for agent_idx, trajectory in history.items():
-            xs = [p[0] for p in trajectory]
-            ys = [p[1] for p in trajectory]
-            label = AGENTS[agent_idx].name
-            plt.plot(xs, ys, linewidth=1.8, label=label)
-        plt.axis("equal")
-        plt.xlabel("x")
-        plt.ylabel("y")
-        plt.legend(fontsize=8, ncol=2)
-        plt.tight_layout()
-        plt.savefig(output_prefix.with_suffix(".png"), dpi=200)
+        set_ocean_plot_style()
+        fig, ax = plt.subplots(figsize=(5.2, 4.8))
+        plot_rescue_trajectory(ax, history, output_prefix.name.replace("_", " ").title(), orbit_mode=orbit_mode)
+        ax.legend(frameon=True, ncol=2, loc="lower right", borderpad=0.35, handlelength=1.6)
+        fig.tight_layout()
+        fig.savefig(output_prefix.with_suffix(".png"), dpi=300, bbox_inches="tight")
         plt.close()
+        with output_prefix.with_suffix(".json").open("w", encoding="utf-8") as f:
+            json.dump({str(agent_idx): trajectory for agent_idx, trajectory in history.items()}, f)
 
-    base, compat = assignment_objective(current_assignment, list(range(len(AGENTS))), list(range(len(ROLES))))
+    base, compat = assignment_objective(current_assignment, list(range(len(AGENTS))), list(range(len(ROLES))), qualification_matrix, rcc_matrix)
     return SimulationMetrics(
         mean_radial_error=float(np.mean(radial_errors)) if radial_errors else 0.0,
         mean_phase_error=float(np.mean(phase_errors)) if phase_errors else 0.0,
@@ -638,6 +819,502 @@ def run_disturbance_sweep(output_dir: Path, current_scales: Sequence[float]) -> 
     return rows
 
 
+def run_situation_aware_end_to_end(output_dir: Path) -> List[Dict[str, object]]:
+    agent_indices = list(range(len(AGENTS)))
+    role_indices = list(range(len(ROLES)))
+    capacities = [1] * len(AGENTS)
+    rows: List[Dict[str, object]] = []
+
+    baseline_q = build_situation_qualification_matrix(agent_indices, role_indices, SITUATION_SNAPSHOTS["baseline"])
+    shifted_q = build_situation_qualification_matrix(agent_indices, role_indices, SITUATION_SNAPSHOTS["bearing_shift"])
+    static_q = build_qualification_matrix(agent_indices, role_indices)
+
+    baseline_assignment, _, _ = optimized_assignment(
+        agent_indices,
+        role_indices,
+        capacities,
+        use_compatibility=True,
+        qualification_matrix=baseline_q,
+    )
+    shifted_assignment, _, _ = optimized_assignment(
+        agent_indices,
+        role_indices,
+        capacities,
+        use_compatibility=True,
+        qualification_matrix=shifted_q,
+    )
+    static_assignment, _, _ = optimized_assignment(
+        agent_indices,
+        role_indices,
+        capacities,
+        use_compatibility=True,
+        qualification_matrix=static_q,
+    )
+
+    scenarios = [
+        ("Baseline situation", "baseline", baseline_q, baseline_assignment, output_dir / "situation_baseline_ahp"),
+        ("Shifted situation, stale baseline assignment", "bearing_shift_stale", shifted_q, baseline_assignment, output_dir / "situation_shift_stale"),
+        ("Shifted situation, AHP reassignment", "bearing_shift_reassign", shifted_q, shifted_assignment, output_dir / "situation_shift_reassign"),
+        ("Shifted situation, capability-template assignment", "bearing_shift_template", shifted_q, static_assignment, output_dir / "situation_shift_template"),
+    ]
+
+    for label, key, q, assignment, prefix in scenarios:
+        metrics = simulate_assignment(assignment, output_prefix=prefix, qualification_matrix=q)
+        rows.append({
+            "scenario": key,
+            "method": label,
+            "assignment": {AGENTS[a].name: [ROLES[r].name for r in roles] for a, roles in assignment.items()},
+            "assignment_utility": metrics.assignment_utility,
+            "compatible_utility": metrics.compatible_utility,
+            "mean_role_error": metrics.mean_role_error,
+            "mean_phase_error": metrics.mean_phase_error,
+            "mean_control_ratio": metrics.mean_control_ratio,
+            "min_separation": metrics.min_separation,
+            "collision_violations": float(metrics.collision_violations),
+        })
+
+    set_ocean_plot_style()
+    fig, axes = plt.subplots(1, 3, figsize=(10.2, 3.6))
+    fig.patch.set_facecolor("white")
+    plot_specs = [
+        (output_dir / "situation_baseline_ahp.json", "(a) Baseline AHP", True),
+        (output_dir / "situation_shift_stale.json", "(b) Shift, stale", False),
+        (output_dir / "situation_shift_reassign.json", "(c) Shift, reassigned", False),
+    ]
+    for ax, (path, title, show_ylabel) in zip(axes, plot_specs):
+        plot_rescue_trajectory(ax, load_history(path), title, show_ylabel=show_ylabel)
+        if ax.get_legend():
+            ax.legend_.remove()
+    fig.tight_layout(w_pad=0.4)
+    fig.savefig(output_dir / "situation_aware_panel.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    return rows
+
+
+def perturb_rcc(seed: int, noise_scale: float = 0.18) -> List[List[float]]:
+    rng = random.Random(seed)
+    n_roles = len(RCC)
+    perturbed = [[0.0 for _ in range(n_roles)] for _ in range(n_roles)]
+    for i in range(n_roles):
+        for j in range(i + 1, n_roles):
+            value = RCC[i][j] + rng.uniform(-noise_scale, noise_scale)
+            value = max(-1.0, min(1.0, value))
+            perturbed[i][j] = value
+            perturbed[j][i] = value
+    return perturbed
+
+
+def run_rcc_perturbation_robustness(output_dir: Path, seed_count: int = 51,
+                                    noise_scale: float = 0.18) -> Dict[str, Dict[str, float]]:
+    scarce_agents = [0, 1, 3, 5]
+    role_indices = list(range(len(ROLES)))
+    scarce_capacities = [1, 1, 2, 1]
+
+    results: Dict[str, List[SimulationMetrics]] = {
+        "Sequential auction perturbed-RCC": [],
+        "GMRA compatibility-blind": [],
+        "GMRACCR perturbed-RCC": [],
+    }
+    base_assignments: Dict[str, List[str]] = {
+        "Sequential auction perturbed-RCC": [],
+        "GMRA compatibility-blind": [],
+        "GMRACCR perturbed-RCC": [],
+    }
+
+    gmra_assignment, _, _ = optimized_assignment(
+        scarce_agents,
+        role_indices,
+        scarce_capacities,
+        use_compatibility=False,
+    )
+    for seed in range(seed_count):
+        rcc = perturb_rcc(3000 + seed, noise_scale=noise_scale)
+        auction_assignment = sequential_auction_assignment(
+            scarce_agents,
+            role_indices,
+            scarce_capacities,
+            rcc_matrix=rcc,
+        )
+        gmraccr_assignment, _, _ = optimized_assignment(
+            scarce_agents,
+            role_indices,
+            scarce_capacities,
+            use_compatibility=True,
+            rcc_matrix=rcc,
+        )
+        sim_kwargs = {
+            "initial_phase_noise": 0.06,
+            "initial_radius_noise": 0.03,
+            "current_scale": 1.0 + random.Random(4000 + seed).uniform(-0.06, 0.06),
+            "seed": 5000 + seed,
+        }
+        results["Sequential auction perturbed-RCC"].append(
+            simulate_assignment(auction_assignment, rcc_matrix=rcc, **sim_kwargs)
+        )
+        results["GMRA compatibility-blind"].append(
+            simulate_assignment(gmra_assignment, rcc_matrix=rcc, **sim_kwargs)
+        )
+        results["GMRACCR perturbed-RCC"].append(
+            simulate_assignment(gmraccr_assignment, rcc_matrix=rcc, **sim_kwargs)
+        )
+        for label, assignment in (
+            ("Sequential auction perturbed-RCC", auction_assignment),
+            ("GMRA compatibility-blind", gmra_assignment),
+            ("GMRACCR perturbed-RCC", gmraccr_assignment),
+        ):
+            compact = "; ".join(
+                f"{AGENTS[a].name}:{'+'.join(ROLES[r].name.split()[0] for r in roles)}"
+                for a, roles in sorted(assignment.items())
+            )
+            base_assignments[label].append(compact)
+
+    summary = {name: summarize_metrics(metrics) for name, metrics in results.items()}
+    for name, assignments in base_assignments.items():
+        summary[name]["unique_assignments"] = float(len(set(assignments)))
+        summary[name]["zero_collision_rate"] = float(np.mean([m.collision_violations == 0 for m in results[name]]))
+
+    labels = ["Auction", "GMRA", "GMRACCR"]
+    source_names = ["Sequential auction perturbed-RCC", "GMRA compatibility-blind", "GMRACCR perturbed-RCC"]
+    colors = ["#6f7d1c", "#c84c09", "#1f6f5f"]
+    x = np.arange(len(labels))
+
+    set_ocean_plot_style()
+    fig, axes = plt.subplots(1, 3, figsize=(10.4, 3.25))
+    sep_mean = [summary[name]["min_separation_mean"] for name in source_names]
+    sep_std = [summary[name]["min_separation_std"] for name in source_names]
+    axes[0].bar(x, sep_mean, yerr=sep_std, color=colors, capsize=3, width=0.58)
+    axes[0].axhline(0.85, color="#d62728", linestyle=":", linewidth=1.1)
+    axes[0].set_xticks(x)
+    axes[0].set_xticklabels(labels, rotation=15, ha="right")
+    axes[0].set_ylabel("Min separation (m)")
+    axes[0].grid(axis="y")
+    axes[0].text(0.02, 0.96, "(a)", transform=axes[0].transAxes, ha="left", va="top", fontweight="bold")
+
+    coll_mean = [summary[name]["collision_violations_mean"] for name in source_names]
+    coll_std = [summary[name]["collision_violations_std"] for name in source_names]
+    axes[1].bar(x, coll_mean, yerr=coll_std, color=colors, capsize=3, width=0.58)
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels(labels, rotation=15, ha="right")
+    axes[1].set_ylabel("Collision violations")
+    axes[1].grid(axis="y")
+    axes[1].text(0.02, 0.96, "(b)", transform=axes[1].transAxes, ha="left", va="top", fontweight="bold")
+
+    zero_rates = [100.0 * summary[name]["zero_collision_rate"] for name in source_names]
+    axes[2].bar(x, zero_rates, color=colors, width=0.58)
+    axes[2].set_xticks(x)
+    axes[2].set_xticklabels(labels, rotation=15, ha="right")
+    axes[2].set_ylabel("Zero-collision trials (%)")
+    axes[2].set_ylim(0, 105)
+    axes[2].grid(axis="y")
+    axes[2].text(0.02, 0.96, "(c)", transform=axes[2].transAxes, ha="left", va="top", fontweight="bold")
+
+    for ax in axes:
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+    fig.tight_layout(w_pad=0.55)
+    fig.savefig(output_dir / "rcc_perturbation_robustness.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    return summary
+
+
+def summarize_metrics(metrics: Sequence[SimulationMetrics]) -> Dict[str, float]:
+    return {
+        "mean_role_error_mean": float(np.mean([m.mean_role_error for m in metrics])),
+        "mean_role_error_std": float(np.std([m.mean_role_error for m in metrics], ddof=0)),
+        "min_separation_mean": float(np.mean([m.min_separation for m in metrics])),
+        "min_separation_std": float(np.std([m.min_separation for m in metrics], ddof=0)),
+        "collision_violations_mean": float(np.mean([m.collision_violations for m in metrics])),
+        "collision_violations_std": float(np.std([m.collision_violations for m in metrics], ddof=0)),
+    }
+
+
+def run_stochastic_scarce_trials(output_dir: Path, seed_count: int = 21) -> Dict[str, Dict[str, float]]:
+    scarce_agents = [0, 1, 3, 5]
+    role_indices = list(range(len(ROLES)))
+    scarce_capacities = [1, 1, 2, 1]
+    gmra_assignment, _, _ = optimized_assignment(scarce_agents, role_indices, scarce_capacities, use_compatibility=False)
+    auction_assignment = sequential_auction_assignment(scarce_agents, role_indices, scarce_capacities)
+    gmraccr_assignment, _, _ = optimized_assignment(scarce_agents, role_indices, scarce_capacities, use_compatibility=True)
+
+    results: Dict[str, List[SimulationMetrics]] = {
+        "Sequential auction multi-role": [],
+        "GMRA multi-role": [],
+        "GMRACCR multi-role": [],
+    }
+    for seed in range(seed_count):
+        current_scale = 1.0 + random.Random(1000 + seed).uniform(-0.08, 0.08)
+        sim_kwargs = {
+            "current_scale": current_scale,
+            "initial_phase_noise": 0.08,
+            "initial_radius_noise": 0.04,
+            "seed": 2000 + seed,
+        }
+        results["Sequential auction multi-role"].append(simulate_assignment(auction_assignment, **sim_kwargs))
+        results["GMRA multi-role"].append(simulate_assignment(gmra_assignment, **sim_kwargs))
+        results["GMRACCR multi-role"].append(simulate_assignment(gmraccr_assignment, **sim_kwargs))
+
+    labels = list(results.keys())
+    means_sep = [np.mean([m.min_separation for m in results[label]]) for label in labels]
+    std_sep = [np.std([m.min_separation for m in results[label]], ddof=0) for label in labels]
+    means_coll = [np.mean([m.collision_violations for m in results[label]]) for label in labels]
+    std_coll = [np.std([m.collision_violations for m in results[label]], ddof=0) for label in labels]
+
+    short_labels = ["Auction", "GMRA", "GMRACCR"]
+    x = np.arange(len(labels))
+    plt.rcParams.update({
+        "font.size": 10,
+        "axes.labelsize": 10,
+        "axes.titlesize": 10,
+        "legend.fontsize": 8,
+        "xtick.labelsize": 9,
+        "ytick.labelsize": 9,
+    })
+    fig, axes = plt.subplots(1, 2, figsize=(9.6, 3.8))
+    fig.patch.set_facecolor("white")
+    axes[0].bar(x, means_sep, yerr=std_sep, capsize=4, color=["#6f7d1c", "#c84c09", "#1f6f5f"], width=0.62)
+    axes[0].set_xticks(x)
+    axes[0].set_xticklabels(short_labels)
+    axes[0].set_ylabel("Min separation")
+    axes[0].grid(axis="y", alpha=0.18, linewidth=0.7)
+    axes[0].text(0.02, 0.96, "(a)", transform=axes[0].transAxes, ha="left", va="top", fontweight="bold")
+
+    axes[1].bar(x, means_coll, yerr=std_coll, capsize=4, color=["#6f7d1c", "#c84c09", "#1f6f5f"], width=0.62)
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels(short_labels)
+    axes[1].set_ylabel("Collision violations")
+    axes[1].grid(axis="y", alpha=0.18, linewidth=0.7)
+    axes[1].text(0.02, 0.96, "(b)", transform=axes[1].transAxes, ha="left", va="top", fontweight="bold")
+
+    for axis in axes:
+        axis.spines["top"].set_visible(False)
+        axis.spines["right"].set_visible(False)
+    fig.tight_layout()
+    fig.savefig(output_dir / "stochastic_scarce.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    return {name: summarize_metrics(metrics) for name, metrics in results.items()}
+
+
+def synthetic_assignment_inputs(n_agents: int, n_roles: int) -> Tuple[List[List[float]], List[List[float]], List[int], List[int]]:
+    base_q = build_qualification_matrix(list(range(len(AGENTS))), list(range(len(ROLES))))
+    q: List[List[float]] = []
+    for i in range(n_agents):
+        row = []
+        for j in range(n_roles):
+            value = base_q[i % len(AGENTS)][j % len(ROLES)]
+            value += 0.015 * ((i * 3 + j * 5) % 7)
+            row.append(min(1.0, value))
+        q.append(row)
+
+    rcc: List[List[float]] = []
+    for j in range(n_roles):
+        row = []
+        for k in range(n_roles):
+            if j == k:
+                row.append(0.0)
+            else:
+                row.append(RCC[j % len(ROLES)][k % len(ROLES)])
+        rcc.append(row)
+
+    role_demands = [1] * n_roles
+    capacities = [1] * n_agents
+    extra_capacity = max(0, n_roles - n_agents)
+    for idx in range(extra_capacity):
+        capacities[idx % n_agents] += 1
+    return q, rcc, role_demands, capacities
+
+
+def sequential_auction_matrix(q: Sequence[Sequence[float]], rcc: Sequence[Sequence[float]],
+                              capacities: Sequence[int]) -> List[List[int]]:
+    n_agents = len(q)
+    n_roles = len(q[0])
+    remaining = list(capacities)
+    assignment = [[0 for _ in range(n_roles)] for _ in range(n_agents)]
+    held_roles: List[List[int]] = [[] for _ in range(n_agents)]
+    for role_idx in range(n_roles):
+        best_agent = None
+        best_bid = float("-inf")
+        for agent_idx in range(n_agents):
+            if remaining[agent_idx] <= 0:
+                continue
+            marginal_compat = sum(rcc[role_idx][held] + rcc[held][role_idx] for held in held_roles[agent_idx])
+            bid = q[agent_idx][role_idx] + marginal_compat
+            if bid > best_bid:
+                best_bid = bid
+                best_agent = agent_idx
+        if best_agent is None:
+            raise RuntimeError("No feasible synthetic auction assignment found")
+        assignment[best_agent][role_idx] = 1
+        held_roles[best_agent].append(role_idx)
+        remaining[best_agent] -= 1
+    return assignment
+
+
+def time_call(fn, repeats: int) -> Tuple[float, float]:
+    values = []
+    for _ in range(repeats):
+        start = time.perf_counter()
+        fn()
+        values.append((time.perf_counter() - start) * 1000.0)
+    return float(np.mean(values)), float(np.std(values, ddof=0))
+
+
+def run_assignment_scaling(output_dir: Path) -> List[Dict[str, float]]:
+    rows: List[Dict[str, float]] = []
+    for n_agents, n_roles, repeats in ((6, 5, 50), (8, 6, 20), (10, 8, 5)):
+        q, rcc, role_demands, capacities = synthetic_assignment_inputs(n_agents, n_roles)
+
+        def solve_gmraccr() -> None:
+            GMRACCR(n_agents, n_roles, q, role_demands, capacities, rcc).solve(prefer_pulp=True)
+
+        def solve_auction() -> None:
+            sequential_auction_matrix(q, rcc, capacities)
+
+        g_mean, g_std = time_call(solve_gmraccr, repeats)
+        a_mean, a_std = time_call(solve_auction, repeats)
+        rows.append({
+            "agents": float(n_agents),
+            "roles": float(n_roles),
+            "gmraccr_ms_mean": g_mean,
+            "gmraccr_ms_std": g_std,
+            "auction_ms_mean": a_mean,
+            "auction_ms_std": a_std,
+        })
+    labels = [f"{int(row['agents'])}/{int(row['roles'])}" for row in rows]
+    x = np.arange(len(rows))
+    fig, ax = plt.subplots(figsize=(6.2, 3.8))
+    fig.patch.set_facecolor("white")
+    ax.errorbar(x, [row["gmraccr_ms_mean"] for row in rows], yerr=[row["gmraccr_ms_std"] for row in rows],
+                marker="o", linewidth=2.0, capsize=4, color="#153b50", label="GMRACCR")
+    ax.errorbar(x, [row["auction_ms_mean"] for row in rows], yerr=[row["auction_ms_std"] for row in rows],
+                marker="s", linewidth=2.0, capsize=4, color="#c84c09", label="Sequential auction")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    ax.set_xlabel("Agents / roles")
+    ax.set_ylabel("Runtime (ms, log scale)")
+    ax.set_yscale("log")
+    ax.grid(axis="y", alpha=0.18, linewidth=0.7)
+    ax.legend(frameon=False, loc="upper left")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    fig.tight_layout()
+    fig.savefig(output_dir / "assignment_scaling.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    return rows
+
+
+def load_history(path: Path) -> Dict[int, List[Tuple[float, float]]]:
+    with path.open("r", encoding="utf-8") as f:
+        raw = json.load(f)
+    return {int(agent_idx): [tuple(point) for point in points] for agent_idx, points in raw.items()}
+
+
+def make_scarce_comparison_panel(output_dir: Path, scarce_results: Dict[str, SimulationMetrics]) -> None:
+    set_ocean_plot_style()
+    fig = plt.figure(figsize=(10.2, 6.1))
+    gs = fig.add_gridspec(2, 3, height_ratios=[2.05, 1.0], hspace=0.34, wspace=0.18)
+    histories = [
+        load_history(output_dir / "scarce_auction.json"),
+        load_history(output_dir / "scarce_gmra.json"),
+        load_history(output_dir / "scarce_gmraccr.json"),
+    ]
+    labels = ["(a) Sequential auction", "(b) GMRA", "(c) GMRACCR"]
+    for idx, (history, label) in enumerate(zip(histories, labels)):
+        ax = fig.add_subplot(gs[0, idx])
+        plot_rescue_trajectory(ax, history, label, show_ylabel=(idx == 0))
+        ax.legend_.remove() if ax.get_legend() else None
+
+    methods = ["Auction", "GMRA", "GMRACCR"]
+    source_names = ["Sequential auction multi-role", "GMRA-multi", "GMRACCR-multi"]
+    colors = ["#6f7d1c", "#c84c09", "#1f6f5f"]
+    x = np.arange(len(methods))
+    ax_sep = fig.add_subplot(gs[1, :2])
+    sep_values = [scarce_results[name].min_separation for name in source_names]
+    bars = ax_sep.bar(x, sep_values, color=colors, width=0.58)
+    ax_sep.axhline(0.85, color="#d62728", linestyle=":", linewidth=1.2, label="Safety threshold")
+    ax_sep.set_xticks(x)
+    ax_sep.set_xticklabels(methods)
+    ax_sep.set_ylabel("Minimum separation (m)")
+    ax_sep.grid(axis="y")
+    ax_sep.legend(frameon=False, loc="upper left")
+    for bar, value in zip(bars, sep_values):
+        ax_sep.text(bar.get_x() + bar.get_width() / 2, value + 0.05, f"{value:.2f}",
+                    ha="center", va="bottom", fontsize=8)
+    ax_sep.text(0.01, 0.95, "(d)", transform=ax_sep.transAxes, ha="left", va="top", fontweight="bold")
+
+    ax_col = fig.add_subplot(gs[1, 2])
+    collision_values = [scarce_results[name].collision_violations for name in source_names]
+    bars = ax_col.bar(x, collision_values, color=colors, width=0.58)
+    ax_col.set_xticks(x)
+    ax_col.set_xticklabels(methods, rotation=25, ha="right")
+    ax_col.set_ylabel("Collision violations")
+    ax_col.grid(axis="y")
+    for bar, value in zip(bars, collision_values):
+        ax_col.text(bar.get_x() + bar.get_width() / 2, value + max(collision_values) * 0.02 + 1,
+                    f"{int(value)}", ha="center", va="bottom", fontsize=8)
+    ax_col.text(0.03, 0.95, "(e)", transform=ax_col.transAxes, ha="left", va="top", fontweight="bold")
+
+    for ax in (ax_sep, ax_col):
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+    fig.savefig(output_dir / "scarce_comparison_panel.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def make_robustness_scaling_panel(output_dir: Path, stochastic_scarce: Dict[str, Dict[str, float]],
+                                  assignment_scaling: List[Dict[str, float]]) -> None:
+    set_ocean_plot_style()
+    fig, axes = plt.subplots(1, 3, figsize=(10.2, 3.1), gridspec_kw={"width_ratios": [1.0, 1.0, 1.25]})
+    methods = ["Auction", "GMRA", "GMRACCR"]
+    source_names = ["Sequential auction multi-role", "GMRA multi-role", "GMRACCR multi-role"]
+    colors = ["#6f7d1c", "#c84c09", "#1f6f5f"]
+    x = np.arange(len(methods))
+
+    sep_mean = [stochastic_scarce[name]["min_separation_mean"] for name in source_names]
+    sep_std = [stochastic_scarce[name]["min_separation_std"] for name in source_names]
+    axes[0].bar(x, sep_mean, yerr=sep_std, color=colors, capsize=3, width=0.58)
+    axes[0].set_xticks(x)
+    axes[0].set_xticklabels(methods, rotation=15, ha="right")
+    axes[0].set_ylabel("Min separation (m)")
+    axes[0].grid(axis="y")
+    axes[0].text(0.02, 0.96, "(a)", transform=axes[0].transAxes, ha="left", va="top", fontweight="bold")
+
+    coll_mean = [stochastic_scarce[name]["collision_violations_mean"] for name in source_names]
+    coll_std = [stochastic_scarce[name]["collision_violations_std"] for name in source_names]
+    axes[1].bar(x, coll_mean, yerr=coll_std, color=colors, capsize=3, width=0.58)
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels(methods, rotation=15, ha="right")
+    axes[1].set_ylabel("Collision violations")
+    axes[1].grid(axis="y")
+    axes[1].text(0.02, 0.96, "(b)", transform=axes[1].transAxes, ha="left", va="top", fontweight="bold")
+
+    labels = [f"{int(row['agents'])}/{int(row['roles'])}" for row in assignment_scaling]
+    sx = np.arange(len(labels))
+    axes[2].errorbar(sx, [row["gmraccr_ms_mean"] for row in assignment_scaling],
+                     yerr=[row["gmraccr_ms_std"] for row in assignment_scaling],
+                     marker="o", linewidth=1.8, capsize=3, color="#153b50", label="GMRACCR")
+    axes[2].errorbar(sx, [row["auction_ms_mean"] for row in assignment_scaling],
+                     yerr=[row["auction_ms_std"] for row in assignment_scaling],
+                     marker="s", linewidth=1.8, capsize=3, color="#c84c09", label="Sequential auction")
+    axes[2].set_xticks(sx)
+    axes[2].set_xticklabels(labels)
+    axes[2].set_xlabel("Agents / roles")
+    axes[2].set_ylabel("Runtime (ms, log scale)")
+    axes[2].set_yscale("log")
+    axes[2].grid(axis="y")
+    axes[2].legend(frameon=False, loc="upper left")
+    axes[2].text(0.02, 0.96, "(c)", transform=axes[2].transAxes, ha="left", va="top", fontweight="bold")
+
+    for ax in axes:
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+    fig.tight_layout(w_pad=0.6)
+    fig.savefig(output_dir / "robustness_scaling_panel.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
 def run_all_experiments(output_dir: Path) -> Dict[str, object]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -645,11 +1322,13 @@ def run_all_experiments(output_dir: Path) -> Dict[str, object]:
     role_indices = list(range(len(ROLES)))
 
     opt_assignment, opt_base, opt_compat = optimized_assignment(agent_indices, role_indices, [1] * len(AGENTS), use_compatibility=True)
+    auction_assignment = sequential_auction_assignment(agent_indices, role_indices, [1] * len(AGENTS))
     greedy_assignment = average_capability_greedy(agent_indices, role_indices)
     random_assignment = random_feasible_assignment(agent_indices, role_indices, seed=11)
 
     static_results = {
         "GMRACCR-opt": simulate_assignment(opt_assignment, output_prefix=output_dir / "static_gmraccr"),
+        "Sequential auction": simulate_assignment(auction_assignment, output_prefix=output_dir / "static_auction"),
         "Avg-greedy": simulate_assignment(greedy_assignment, output_prefix=output_dir / "static_greedy"),
         "Random": simulate_assignment(random_assignment, output_prefix=output_dir / "static_random"),
     }
@@ -657,9 +1336,11 @@ def run_all_experiments(output_dir: Path) -> Dict[str, object]:
     scarce_agents = [0, 1, 3, 5]  # UUV1, UUV2, UUV4, UUV6
     scarce_capacities = [1, 1, 2, 1]
     gmra_multi_assignment, gmra_base, gmra_compat = optimized_assignment(scarce_agents, role_indices, scarce_capacities, use_compatibility=False)
+    auction_multi_assignment = sequential_auction_assignment(scarce_agents, role_indices, scarce_capacities)
     gmraccr_multi_assignment, gmraccr_base, gmraccr_compat = optimized_assignment(scarce_agents, role_indices, scarce_capacities, use_compatibility=True)
 
     scarce_results = {
+        "Sequential auction multi-role": simulate_assignment(auction_multi_assignment, output_prefix=output_dir / "scarce_auction"),
         "GMRA-multi": simulate_assignment(gmra_multi_assignment, output_prefix=output_dir / "scarce_gmra"),
         "GMRACCR-multi": simulate_assignment(gmraccr_multi_assignment, output_prefix=output_dir / "scarce_gmraccr"),
     }
@@ -730,16 +1411,24 @@ def run_all_experiments(output_dir: Path) -> Dict[str, object]:
 
     beta_sweep = run_beta_sweep(output_dir, beta_values=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2])
     disturbance_sweep = run_disturbance_sweep(output_dir, current_scales=[0.6, 0.8, 1.0, 1.2, 1.4, 1.6])
+    situation_aware = run_situation_aware_end_to_end(output_dir)
+    rcc_perturbation = run_rcc_perturbation_robustness(output_dir, seed_count=51, noise_scale=0.18)
+    stochastic_scarce = run_stochastic_scarce_trials(output_dir, seed_count=21)
+    assignment_scaling = run_assignment_scaling(output_dir)
+    make_scarce_comparison_panel(output_dir, scarce_results)
+    make_robustness_scaling_panel(output_dir, stochastic_scarce, assignment_scaling)
 
     summary = {
         "static_assignments": {k: {AGENTS[a].name: [ROLES[r].name for r in v] for a, v in assignment.items()}
                                for k, assignment in {
                                    "GMRACCR-opt": opt_assignment,
+                                   "Sequential auction": auction_assignment,
                                    "Avg-greedy": greedy_assignment,
                                    "Random": random_assignment,
                                }.items()},
         "scarce_assignments": {k: {AGENTS[a].name: [ROLES[r].name for r in v] for a, v in assignment.items()}
                                for k, assignment in {
+                                   "Sequential auction multi-role": auction_multi_assignment,
                                    "GMRA-multi": gmra_multi_assignment,
                                    "GMRACCR-multi": gmraccr_multi_assignment,
                                }.items()},
@@ -752,6 +1441,10 @@ def run_all_experiments(output_dir: Path) -> Dict[str, object]:
         "shape_results": {k: asdict(v) for k, v in shape_results.items()},
         "beta_sweep": beta_sweep,
         "disturbance_sweep": disturbance_sweep,
+        "situation_aware": situation_aware,
+        "rcc_perturbation": rcc_perturbation,
+        "stochastic_scarce": stochastic_scarce,
+        "assignment_scaling": assignment_scaling,
         "assignment_objectives": {
             "GMRACCR-opt": {"base": opt_base, "compat": opt_compat},
             "GMRA-multi": {"base": gmra_base, "compat": gmra_compat},
@@ -775,6 +1468,15 @@ def run_all_experiments(output_dir: Path) -> Dict[str, object]:
         table_rows.append({"group": "beta_sweep", "method": f"beta={row['beta']:.1f}", **row})
     for row in disturbance_sweep:
         table_rows.append({"group": "disturbance_sweep", "method": f"{row['mode']}-scale={row['current_scale']:.1f}", **row})
+    for row in situation_aware:
+        table_row = {key: value for key, value in row.items() if key != "assignment"}
+        table_rows.append({"group": "situation_aware", **table_row})
+    for method_name, row in rcc_perturbation.items():
+        table_rows.append({"group": "rcc_perturbation", "method": method_name, **row})
+    for method_name, row in stochastic_scarce.items():
+        table_rows.append({"group": "stochastic_scarce", "method": method_name, **row})
+    for row in assignment_scaling:
+        table_rows.append({"group": "assignment_scaling", "method": f"{int(row['agents'])}/{int(row['roles'])}", **row})
     with (output_dir / "metrics.csv").open("w", encoding="utf-8", newline="") as f:
         fieldnames = []
         for row in table_rows:

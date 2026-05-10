@@ -16,6 +16,8 @@ run_integrated_experiments.py：可复现实验的入口程序。
 使用 GMRA 或 GMRACCR 模型求解角色分配问题。 
 将分配的角色映射到以目标为中心的圆周轨道半径和相位偏移。 
 在以下场景下模拟一阶编队维持情况： 
+情境感知端到端部署（Situation-aware end-to-end deployment）。
+
 基线部署（Nominal deployment）。 
 
 
@@ -26,6 +28,8 @@ run_integrated_experiments.py：可复现实验的入口程序。
 
 
 海流干扰与碰撞风险压力测试（Ocean-current disturbance and collision-risk stress）。 
+
+兼容性矩阵扰动鲁棒性（Compatibility-matrix perturbation robustness）。 
 
 运行方式
 
@@ -59,10 +63,18 @@ results/disturbance_current_only.png：无避障情况下的紧凑启动海流�
 
 results/disturbance_collision_aware.png：带有避障控制的相同压力测试图。 
 
+results/situation_aware_panel.png：AHP 情境指标到角色分配再到编队执行的端到端验证图。
+
+results/rcc_perturbation_robustness.png：随机扰动角色兼容性矩阵后的稀疏船队鲁棒性图。
+
 与论文的对应关系
 
 名义部署：集成分配 + 编队维持。 
 
+情境感知部署：五个 AHP 救援指标生成资格矩阵，并与固定能力模板和过期分配进行对比。 
+
 稀疏船队部署：多角色负载下的 GMRA 与 GMRACCR 对比。 
+
+兼容性扰动：检验专家设定的 RCC 矩阵存在不确定性时，GMRACCR、GMRA 与 auction 的执行鲁棒性。 
 
 失效响应实验：丢失中继后的重新分配。 
